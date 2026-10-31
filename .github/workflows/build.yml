@@ -1,0 +1,514 @@
+# Satu file ini membuat seluruh project Android lalu membangun APK-nya.
+# Cara pakai: Actions > Build APK > Run workflow > download artifact "pool-guide-apk".
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create project files
+        run: |
+          set -e
+          ROOT="$GITHUB_WORKSPACE/poolguide-src"
+          mkdir -p "$ROOT"
+          cat > "$ROOT/settings.gradle.kts" <<'__PG_EOF__'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "PoolGuide"
+          include(":app")
+          __PG_EOF__
+          mkdir -p "$ROOT"
+          cat > "$ROOT/build.gradle.kts" <<'__PG_EOF__'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          __PG_EOF__
+          mkdir -p "$ROOT"
+          cat > "$ROOT/gradle.properties" <<'__PG_EOF__'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          __PG_EOF__
+          mkdir -p "$ROOT/app"
+          cat > "$ROOT/app/build.gradle.kts" <<'__PG_EOF__'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.poolguide.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.poolguide.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          __PG_EOF__
+          mkdir -p "$ROOT/app/src/main"
+          cat > "$ROOT/app/src/main/AndroidManifest.xml" <<'__PG_EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Pool Guide"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".OverlayService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="screen_overlay_guide" />
+                  </service>
+              </application>
+          </manifest>
+          __PG_EOF__
+          mkdir -p "$ROOT/app/src/main/java/com/poolguide/app"
+          cat > "$ROOT/app/src/main/java/com/poolguide/app/MainActivity.kt" <<'__PG_EOF__'
+          package com.poolguide.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+
+              private lateinit var status: TextView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val pad = (24 * resources.displayMetrics.density).toInt()
+                  val pkg = packageName
+
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.gravity = Gravity.CENTER_VERTICAL
+                  root.setPadding(pad, pad, pad, pad)
+
+                  val title = TextView(this)
+                  title.text = "Pool Guide"
+                  title.textSize = 28f
+
+                  status = TextView(this)
+                  status.textSize = 15f
+                  status.setPadding(0, pad / 2, 0, pad)
+
+                  val grant = Button(this)
+                  grant.text = "1. Izinkan Display over other apps"
+                  grant.setOnClickListener {
+                      startActivity(
+                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + pkg))
+                      )
+                  }
+
+                  val start = Button(this)
+                  start.text = "2. START OVERLAY"
+                  start.setOnClickListener { startOverlay() }
+
+                  val stop = Button(this)
+                  stop.text = "STOP OVERLAY"
+                  stop.setOnClickListener {
+                      stopService(Intent(this, OverlayService::class.java))
+                  }
+
+                  root.addView(title)
+                  root.addView(status)
+                  root.addView(grant)
+                  root.addView(start)
+                  root.addView(stop)
+                  setContentView(root)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  status.text = if (Settings.canDrawOverlays(this)) {
+                      "Izin overlay: SUDAH diberikan"
+                  } else {
+                      "Izin overlay: BELUM diberikan"
+                  }
+              }
+
+              private fun startOverlay() {
+                  if (!Settings.canDrawOverlays(this)) {
+                      Toast.makeText(this, "Izin overlay belum diberikan", Toast.LENGTH_LONG).show()
+                      return
+                  }
+                  if (Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                  ) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
+                  startForegroundService(Intent(this, OverlayService::class.java))
+                  Toast.makeText(this, "Overlay jalan. Buka game-nya.", Toast.LENGTH_LONG).show()
+              }
+          }
+          __PG_EOF__
+          mkdir -p "$ROOT/app/src/main/java/com/poolguide/app"
+          cat > "$ROOT/app/src/main/java/com/poolguide/app/GuideView.kt" <<'__PG_EOF__'
+          package com.poolguide.app
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.graphics.Path
+          import android.graphics.PointF
+          import android.view.MotionEvent
+          import android.view.View
+          import kotlin.math.atan2
+          import kotlin.math.cos
+          import kotlin.math.hypot
+          import kotlin.math.max
+          import kotlin.math.min
+          import kotlin.math.sin
+
+          /**
+           * Layar transparan yang menggambar garis bidik.
+           * TABLE : geser 4 sudut cyan ke sudut meja (cukup sekali, tersimpan).
+           * LINE  : garis lurus. BANK : garis yang memantul di dinding meja.
+           * PLAY  : sentuhan diteruskan ke game (diatur oleh OverlayService).
+           */
+          class GuideView(context: Context) : View(context) {
+
+              enum class Mode { PLAY, TABLE, LINE, BANK }
+
+              private val density = resources.displayMetrics.density
+              private val prefs = context.getSharedPreferences("pool_guide", Context.MODE_PRIVATE)
+
+              // Urutan sudut: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah
+              private val corners = Array(4) { PointF() }
+              var calibrated = false
+                  private set
+
+              private val origin = PointF()
+              private var placed = false
+              private var angle = -0.785f
+              private var length = 600f
+              private var guideType = Mode.LINE
+
+              private var dragging = -1
+              private var offX = 0f
+              private var offY = 0f
+              private var lastX = 0f
+              private var lastY = 0f
+              private var prevAngle = 0f
+              private var prevDist = 1f
+
+              private val ballRadius = 11f * density
+              private val path = Path()
+
+              private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.WHITE
+                  style = Paint.Style.STROKE
+                  strokeWidth = 2.5f * density
+                  strokeCap = Paint.Cap.ROUND
+              }
+              private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.YELLOW
+                  style = Paint.Style.STROKE
+                  strokeWidth = 2f * density
+              }
+              private val tablePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.CYAN
+                  style = Paint.Style.STROKE
+                  strokeWidth = 1.5f * density
+              }
+              private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                  color = Color.argb(140, 0, 220, 255)
+                  style = Paint.Style.FILL
+              }
+
+              var mode: Mode = Mode.PLAY
+                  set(value) {
+                      field = value
+                      if (value == Mode.LINE || value == Mode.BANK) guideType = value
+                      dragging = -1
+                      invalidate()
+                  }
+
+              init {
+                  if (prefs.contains("c0x")) {
+                      for (i in 0 until 4) {
+                          corners[i].set(prefs.getFloat("c" + i + "x", 0f), prefs.getFloat("c" + i + "y", 0f))
+                      }
+                      calibrated = true
+                  }
+              }
+
+              override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                  super.onSizeChanged(w, h, oldw, oldh)
+                  if (!calibrated) {
+                      corners[0].set(w * 0.12f, h * 0.22f)
+                      corners[1].set(w * 0.88f, h * 0.22f)
+                      corners[2].set(w * 0.88f, h * 0.85f)
+                      corners[3].set(w * 0.12f, h * 0.85f)
+                  }
+                  if (!placed) {
+                      origin.set(w * 0.5f, h * 0.55f)
+                      placed = true
+                  }
+              }
+
+              // ---------- Menggambar ----------
+
+              override fun onDraw(canvas: Canvas) {
+                  super.onDraw(canvas)
+
+                  if (mode != Mode.PLAY) {
+                      path.reset()
+                      path.moveTo(corners[0].x, corners[0].y)
+                      for (i in 1 until 4) path.lineTo(corners[i].x, corners[i].y)
+                      path.close()
+                      canvas.drawPath(path, tablePaint)
+                  }
+
+                  if (mode == Mode.TABLE) {
+                      for (i in 0 until 4) {
+                          canvas.drawCircle(corners[i].x, corners[i].y, 22f * density, handlePaint)
+                          canvas.drawCircle(corners[i].x, corners[i].y, 22f * density, tablePaint)
+                      }
+                      return
+                  }
+
+                  val pts = if (guideType == Mode.BANK) bankPoints() else straightPoints()
+                  for (i in 0 until pts.size - 1) {
+                      canvas.drawLine(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, linePaint)
+                  }
+                  canvas.drawCircle(origin.x, origin.y, ballRadius, ringPaint)
+                  val end = pts[pts.size - 1]
+                  canvas.drawCircle(end.x, end.y, ballRadius, ringPaint)
+              }
+
+              private fun straightPoints(): List<PointF> {
+                  val list = ArrayList<PointF>()
+                  list.add(PointF(origin.x, origin.y))
+                  list.add(PointF(origin.x + cos(angle) * length, origin.y + sin(angle) * length))
+                  return list
+              }
+
+              private fun bankPoints(): List<PointF> {
+                  val list = ArrayList<PointF>()
+                  var x = origin.x
+                  var y = origin.y
+                  list.add(PointF(x, y))
+
+                  var left = corners[0].x
+                  var right = corners[0].x
+                  var top = corners[0].y
+                  var bottom = corners[0].y
+                  for (i in 1 until 4) {
+                      left = min(left, corners[i].x)
+                      right = max(right, corners[i].x)
+                      top = min(top, corners[i].y)
+                      bottom = max(bottom, corners[i].y)
+                  }
+
+                  var dx = cos(angle)
+                  var dy = sin(angle)
+                  var remaining = length
+
+                  // Titik awal di luar meja: gambar garis lurus saja.
+                  if (x <= left || x >= right || y <= top || y >= bottom) {
+                      list.add(PointF(x + dx * remaining, y + dy * remaining))
+                      return list
+                  }
+
+                  var bounces = 0
+                  while (remaining > 0.5f && bounces < 8) {
+                      var tHit = Float.MAX_VALUE
+                      var hitVertical = false
+
+                      if (dx > 1e-6f) {
+                          val t = (right - x) / dx
+                          if (t < tHit) { tHit = t; hitVertical = true }
+                      } else if (dx < -1e-6f) {
+                          val t = (left - x) / dx
+                          if (t < tHit) { tHit = t; hitVertical = true }
+                      }
+                      if (dy > 1e-6f) {
+                          val t = (bottom - y) / dy
+                          if (t < tHit) { tHit = t; hitVertical = false }
+                      } else if (dy < -1e-6f) {
+                          val t = (top - y) / dy
+                          if (t < tHit) { tHit = t; hitVertical = false }
+                      }
+                      if (tHit < 0f) tHit = 0f
+
+                      if (tHit >= remaining) {
+                          list.add(PointF(x + dx * remaining, y + dy * remaining))
+                          break
+                      }
+
+                      x += dx * tHit
+                      y += dy * tHit
+                      list.add(PointF(x, y))
+                      remaining -= tHit
+                      if (hitVertical) dx = -dx else dy = -dy
+                      bounces++
+                  }
+                  return list
+              }
+
+              // ---------- Sentuhan ----------
+
+              override fun onTouchEvent(event: MotionEvent): Boolean {
+                  when (mode) {
+                      Mode.TABLE -> touchTable(event)
+                      Mode.LINE, Mode.BANK -> touchLine(event)
+                      Mode.PLAY -> return false
+                  }
+                  return true
+              }
+
+              private fun touchTable(e: MotionEvent) {
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          var best = -1
+                          var bestDist = 90f * density
+                          for (i in 0 until 4) {
+                              val d = hypot(e.x - corners[i].x, e.y - corners[i].y)
+                              if (d < bestDist) {
+                                  bestDist = d
+                                  best = i
+                              }
+                          }
+                          dragging = best
+                          if (best >= 0) {
+                              offX = corners[best].x - e.x
+                              offY = corners[best].y - e.y
+                          }
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          if (dragging >= 0) {
+                              corners[dragging].set(e.x + offX, e.y + offY)
+                              invalidate()
+                          }
+                      }
+                      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                          if (dragging >= 0) saveCorners()
+                          dragging = -1
+                      }
+                  }
+              }
+
+              private fun saveCorners() {
+                  val ed = prefs.edit()
+                  for (i in 0 until 4) {
+                      ed.putFloat("c" + i + "x", corners[i].x)
+                      ed.putFloat("c" + i + "y", corners[i].y)
+                  }
+                  ed.apply()
+                  calibrated = true
+              }
+
+              private fun touchLine(e: MotionEvent) {
+                  when (e.actionMasked) {
+                      MotionEvent.ACTION_DOWN -> {
+                          lastX = e.x
+                          lastY = e.y
+                      }
+                      MotionEvent.ACTION_POINTER_DOWN -> {
+                          if (e.pointerCount >= 2) {
+                              prevAngle = pairAngle(e)
+                              prevDist = max(pairDist(e), 1f)
+                          }
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          if (e.pointerCount >= 2) {
+                              val a = pairAngle(e)
+                              val d = max(pairDist(e), 1f)
+                              angle += wrap(a - prevAngle)
+                              length = (length * d / prevDist).coerceIn(80f * density, 3000f * density)
+                              prevAngle = a
+                              prevDist = d
+                          } else {
+                              origin.x += e.x - lastX
+                              origin.y += e.y - lastY
+                              lastX = e.x
+                              lastY = e.y
+                          }
+                          invalidate()
+                      }
+                      MotionEvent.ACTION_POINTER_UP -> {
+                          val keep = if (e.actionIndex == 0) 1 else 0
+                          lastX = e.getX(keep)
+                          lastY = e.getY(keep)
+                      }
+                  }
+    
